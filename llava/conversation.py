@@ -20,6 +20,7 @@ class SeparatorStyle(Enum):
     LLAMA_3 = auto()
     QWEN = auto()
     GEMMA = auto()
+    LLM_JP = auto()  # カスタム日本語テンプレート用
 
 
 @dataclasses.dataclass
@@ -138,6 +139,19 @@ class Conversation:
                     ret += role + message + self.sep
                 else:
                     ret += role
+                    
+        elif self.sep_style == SeparatorStyle.LLM_JP:
+            if self.tokenizer is None:
+                raise ValueError("LLM-jp tokenizer is not available. Make sure you have the necessary permissions.")
+            chat_template_messages = [{"role": "system", "content": self.system}]
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, images = message
+                    chat_template_messages.append({"role": role, "content": message})
+
+            # print(chat_template_messages)
+            return self.tokenizer.apply_chat_template(chat_template_messages, tokenize=False, add_generation_prompt=True)
 
         elif self.sep_style == SeparatorStyle.LLAMA_2:
             wrap_sys = lambda msg: f"<<SYS>>\n{msg}\n<</SYS>>\n\n" if len(msg) > 0 else msg
@@ -551,6 +565,15 @@ Answer the questions.""",
     sep="<|im_end|>",
 )
 
+conv_llm_jp = Conversation(
+    system="以下は、タスクを説明する指示です。要求を適切に満たす応答を書きなさい。",
+    roles=("user", "assistant"),
+    version="llm_jp",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.LLM_JP,
+)
+
 default_conversation = conv_vicuna_v0
 conv_templates = {
     "default": conv_vicuna_v0,
@@ -578,6 +601,7 @@ conv_templates = {
     "qwen_1_5": conv_qwen,
     "qwen_2": conv_qwen,
     "gemma_instruct": conv_gemma_instruct,
+    "llm_jp": conv_llm_jp,
 }
 
 
