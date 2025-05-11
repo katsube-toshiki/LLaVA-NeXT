@@ -908,88 +908,6 @@ def preprocess_plain(
 
     return dict(input_ids=input_ids, labels=targets)
 
-def preprocess_llmjp(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
-    conv = conversation_lib.default_conversation.copy()
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        conv.messages = []
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            assert role == conv.roles[j % 2], f"{i}"
-            conv.append_message(role, sentence["value"])
-        conversations.append(conv.get_prompt())
-
-    # Tokenize conversations
-    if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations], dim=0)
-    else:
-        input_ids = tokenizer(
-            conversations,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        ).input_ids
-
-    targets = input_ids.clone()
-
-    # マスクターゲット - シンプル版
-    for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-        
-        # 人間の入力部分をマスクする
-        sep = conv.roles[0]  # "### 指示:\n"
-        parts = conversation.split(sep)
-        
-        # 最初の部分（システムプロンプト）をマスク
-        cur_len = 1  # <bos>トークンがある場合
-        target[:cur_len] = IGNORE_INDEX
-        
-        # 残りの部分を処理
-        if len(parts) > 1:
-            for i in range(1, len(parts)):
-                if i % 2 == 1:  # 人間の入力
-                    if has_image:
-                        instruction_text = sep + parts[i].split(conv.roles[1])[0]
-                        instruction_len = len(tokenizer_image_token(instruction_text, tokenizer))
-                    else:
-                        instruction_text = sep + parts[i].split(conv.roles[1])[0]
-                        instruction_len = len(tokenizer(instruction_text).input_ids)
-                    
-                    # 人間の入力部分をマスク
-                    target[cur_len:cur_len+instruction_len] = IGNORE_INDEX
-                    cur_len += instruction_len
-                else:  # AIの応答
-                    if has_image:
-                        response_text = conv.roles[1] + parts[i]
-                        response_len = len(tokenizer_image_token(response_text, tokenizer))
-                    else:
-                        response_text = conv.roles[1] + parts[i]
-                        response_len = len(tokenizer(response_text).input_ids)
-                    
-                    # AIの応答部分は既にターゲットに含まれているのでスキップ
-                    cur_len += response_len
-
-        # 残りの部分をマスク
-        target[cur_len:] = IGNORE_INDEX
-        
-        # トークン化の不一致をチェック
-        if cur_len < tokenizer.model_max_length and cur_len != total_len:
-            target[:] = IGNORE_INDEX
-            print(f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
-
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
-
 
 def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
     """
@@ -1013,8 +931,6 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
         return preprocess_gemma(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "llama_v3":
         return preprocess_llama3(sources, tokenizer, has_image=has_image)
-    if conversation_lib.default_conversation.version == "llm_jp":
-        return preprocess_llmjp(sources, tokenizer, has_image=has_image)
     # add end signal and concatenate together
     conversations = []
     for source in sources:

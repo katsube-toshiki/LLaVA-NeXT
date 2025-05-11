@@ -20,8 +20,6 @@ class SeparatorStyle(Enum):
     LLAMA_3 = auto()
     QWEN = auto()
     GEMMA = auto()
-    LLM_JP = auto()  # カスタム日本語テンプレート用
-
 
 @dataclasses.dataclass
 class Conversation:
@@ -139,16 +137,6 @@ class Conversation:
                     ret += role + message + self.sep
                 else:
                     ret += role
-                    
-        elif self.sep_style == SeparatorStyle.LLM_JP:
-            if self.tokenizer is None:
-                raise ValueError("LLM-jp tokenizer is not available. Make sure you have the necessary permissions.")
-            chat_template_messages = [{"role": "system", "content": self.system}]
-            for role, message in messages:
-                if message:
-                    if type(message) is tuple:
-                        message, images = message
-                    chat_template_messages.append({"role": role, "content": message})
 
             # print(chat_template_messages)
             return self.tokenizer.apply_chat_template(chat_template_messages, tokenize=False, add_generation_prompt=True)
@@ -567,11 +555,13 @@ Answer the questions.""",
 
 conv_llm_jp = Conversation(
     system="以下は、タスクを説明する指示です。要求を適切に満たす応答を書きなさい。",
-    roles=("user", "assistant"),
-    version="llm_jp",
+    roles=("ユーザー", "システム"),
+    version="v1",
     messages=(),
     offset=0,
-    sep_style=SeparatorStyle.LLM_JP,
+    sep_style=SeparatorStyle.TWO,
+    sep=" ",
+    sep2="<EOD|LLM-jp>", # if you use llm-jp : <EOD|LLM-jp>, gpt2 and gpt_neox: </s>
 )
 
 default_conversation = conv_vicuna_v0
