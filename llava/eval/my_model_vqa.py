@@ -4,22 +4,103 @@ import os
 import json
 from tqdm import tqdm
 import shortuuid
+from packaging import version
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 from llava.conversation import conv_templates, SeparatorStyle
 from llava.model.builder import load_pretrained_model
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, get_model_name_from_path, KeywordsStoppingCriteria
+from llava import conversation as conversation_lib
 
 from llava.constants import IGNORE_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IMAGE_TOKEN_INDEX
 from typing import Dict, Optional, Sequence, List
 import transformers
+import tokenizers
 import re
 
 from PIL import Image
 import math
 
+IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse("0.14")
+
 from datasets import load_dataset
+
+def preprocess_v1(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False):
+    conv = conv_templates["llm_jp"].copy()
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    source = sources
+
+    if roles[source[0]["from"]] != conv.roles[0]:
+        # Skip the first one if it is not from human
+        source = source[1:]
+
+    conv.messages = []
+    for j, sentence in enumerate(source):
+        role = roles[sentence["from"]]
+        assert role == conv.roles[j % 2], f"{i}"
+        conv.append_message(role, sentence["value"])
+    conversations.append(conv.get_prompt())
+
+    # Tokenize conversations
+
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+
+    targets = input_ids.clone()
+
+    assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
+
+    # Mask targets
+    sep = conv.sep + conv.roles[1] + ": "
+    for conversation, target in zip(conversations, targets):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep2)
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                break
+            parts[0] += sep
+
+            if has_image:
+                round_len = len(tokenizer_image_token(rou, tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+            else:
+                round_len = len(tokenizer(rou).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+
+            if i != 0 and not tokenizer.legacy and IS_TOKENIZER_GREATER_THAN_0_14:
+                round_len -= 1
+                instruction_len -= 1
+
+            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+
+            cur_len += round_len
+        target[cur_len:] = IGNORE_INDEX
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}." f" (ignored)")
+
+    return input_ids
 
 def eval_model(args):
     
@@ -42,16 +123,13 @@ def eval_model(args):
         image = line["image"]
         qs = line["question"]
 
-        args.conv_mode = "llm_jp"
-
         conv = conv_templates[args.conv_mode].copy()
-        conv.append_message(conv.roles[0], (qs, [image], None))
+        conv.append_message(conv.roles[0], (qs, None))
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
-
         cur_prompt = prompt
 
-        input_ids = tokenizer.encode(prompt, return_tensors="pt").cuda()
+        input_ids = preprocess_v1([{"from": "human", "value": qs}, {"from": "gpt", "value": None}], tokenizer, has_image=True).cuda()
 
         image_tensors = []
         image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values']
@@ -59,7 +137,6 @@ def eval_model(args):
         # image_tensors = torch.cat(image_tensors, dim=0)
 
         stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-        keywords = [stop_str]
 
         with torch.inference_mode():
             output_ids = model.generate(
