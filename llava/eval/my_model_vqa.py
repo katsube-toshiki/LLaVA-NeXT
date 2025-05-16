@@ -129,7 +129,7 @@ def eval_model(args):
         prompt = conv.get_prompt()
         cur_prompt = prompt
 
-        input_ids = preprocess_v1([{"from": "human", "value": qs}, {"from": "gpt", "value": None}], tokenizer, has_image=True).cuda()
+        input_ids = preprocess_v1([{"from": "human", "value": (qs, None)}, {"from": "gpt", "value": None}], tokenizer, has_image=True).cuda()
 
         image_tensors = []
         image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values']
